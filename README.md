@@ -1,0 +1,2 @@
+# GamBayes
+GAM Bayesiano
