@@ -1,2 +1,2 @@
-# GamBayesian
+# GamBayes
 GAM y estadística Bayesiana
