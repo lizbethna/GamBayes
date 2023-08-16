@@ -1,0 +1,738 @@
+---
+title: "aneur: comparando stan y cgam"
+output: 
+  pdf_document: 
+    latex_engine: xelatex
+    keep_tex: yes
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{R, eval=TRUE, fig.show="hold", echo=FALSE, include=TRUE, out.width="100%", warning=FALSE, message=FALSE}
+
+library(VGAM)
+library(mgcv)
+library(rstan)
+library(rjags)
+load.module("glm")
+library(plot3D)
+library(dplyr)
+library(ggplot2)
+library(corrplot)
+library(splines)
+library(splines2)
+library(cgam)
+library(MASS)
+library(msm)
+library(nlme)
+setwd("/Users/lizbethna/Documents/Sabatico/Examples/Aneur/")
+
+```
+
+# 1. Aortic Aneurysm Progression Data
+
+This dataset contains longitudinal measurements of grades of aortic aneurysms, measured by ultrasound examination of the diameter of the aorta.
+
+A data frame containing 4337 rows, with each row corresponding to an ultrasound scan from one of 838 men over 65 years of age.
+
+
+* ptnum	(numeric)	Patient identification number   
+
+* age	(numeric)	Recipient age at examination (years)  
+
+* diam	(numeric)	Aortic diameter   
+
+* state	(numeric)	State of aneurysm.   
+
+
+The states represent successive degrees of aneurysm severity, as indicated by the aortic diameter.
+
+* State 1	Aneurysm-free	< 30 cm  
+
+* State 2	Mild aneurysm	30-44 cm  
+
+* State 3	Moderate aneurysm	45-54 cm  
+
+* State 4	Severe aneurysm	> 55 cm  
+
+
+683 of these men were aneurysm-free at age 65 and were re-screened every two years. The remaining men were aneurysmal at entry and had successive screens with frequency depending on the state of the aneurysm. Severe aneurysms are repaired by surgery.
+
+
+```{r, echo=TRUE, eval=TRUE, fig.show="hold", include=TRUE, out.width="100%", warning=FALSE, message=FALSE} 
+data(aneur)
+attach(aneur)
+head(aneur)
+tail(aneur)
+#help(aneur)
+dim(aneur)
+
+(N = n_distinct(aneur$ptnum))   # subjects
+(K = max(table(aneur$ptnum)))   # times
+table(table(aneur$ptnum))
+
+J = 4   # categories
+Y_diam = array(NA,dim=c(N,K)) 
+Y_state = array(NA,dim=c(N,K))
+X_age = array(NA,dim=c(N,K)) 
+Ki = table(aneur$ptnum)
+Ni = c(0,cumsum(Ki))+1
+for(i in 1:N){
+	aneur_i = aneur[aneur$ptnum==i,]
+	for(k in 1:Ki[i]){
+		Y_diam[i,k] = aneur_i$diam[k] 
+		Y_state[i,k] = aneur_i$state[k]
+		X_age[i,k] = aneur_i$age[k]   
+	}  
+} 
+```
+
+```{r, echo=TRUE, eval=TRUE, fig.show="hold", include=TRUE, out.width="100%", warning=FALSE, message=FALSE} 
+(Y_diam[11:18,1:8])
+(Y_state[11:18,1:8]) 
+(X_age[11:18,1:8]) 
+(Ki[11:18]) 
+```
+
+
+```{r eval=TRUE, echo=TRUE, fig.show="hold", message=FALSE, warning=FALSE, include=TRUE, out.width="100%"}
+### Considering only data having more than one screen (state>1)
+idx2 = c()
+for(i in 1:N){
+  if( sum(Y_state[i,1:Ki[i]])>Ki[i]){
+    idx2 = c(idx2,i) 
+  }
+}
+Y2_diam = Y_diam[idx2,]
+Y2_state = Y_state[idx2,] 
+X2_age = X_age[idx2,]
+N2 = length(idx2)
+Ki2 = Ki[idx2]
+
+### Considering only data having more than one screen (diam!=29, or diam<29 & dim>29)
+idx3 = c()
+for(i in 1:N){
+  if( min(Y_diam[i,1:Ki[i]])!=max(Y_diam[i,1:Ki[i]])){
+    idx3 = c(idx3,i) 
+  }
+}
+Y3_diam = Y_diam[idx3,]
+Y3_state = Y_state[idx3,] 
+X3_age = X_age[idx3,]
+N3 = length(idx3)
+Ki3 = Ki[idx3]
+
+aneur2 = aneur%>%filter(aneur$ptnum%in%idx2)
+aneur3 = aneur%>%filter(aneur$ptnum%in%idx3)
+### Creo que es mejor trabajar con aneur3
+```
+
+
+```{r, echo=FALSE, include=TRUE, evaluate=TRUE} 
+### paper size A9: 3.7 x 5.2 cm 
+
+plot(0, type="n", 
+     xlim=c(min(X2_age[,],na.rm=TRUE),max(X2_age[,],na.rm=TRUE)), 
+     ylim=c(min(Y2_diam[,],na.rm=TRUE),max(Y2_diam[,],na.rm=TRUE)), 
+     xlab="Age at examination",ylab="Aortic diameter (mm)")
+#plot(0, xlim=c(60,79.5), ylim=c(10,63), type="n", xlab="Age at examination",ylab="Aortic diameter (mm)")
+
+abline(h=c(30,45,55),lty=2,lwd=2)
+text(61.5,25,"Stage 1")
+text(61.5,37,"Stage 2")
+text(61.5,50,"Stage 3")
+text(61.5,59,"Stage 4")
+
+points(X2_age[67,],Y2_diam[67,], pch=19,cex=0.8,col="red")
+lines(X2_age[67,],Y2_diam[67,], lwd=1.5,col="red")
+points(X2_age[80,],Y2_diam[80,], pch=17,cex=0.8,col="magenta")
+lines(X2_age[80,],Y2_diam[80,], lwd=1.5,col="magenta")
+points(X2_age[119,],Y2_diam[119,], pch=15,cex=0.8,col="blue")
+lines(X2_age[119,],Y2_diam[119,], lwd=1.5,col="blue")
+
+Ki[c(67,80,119)]
+
+legend("bottom",c("Subject 690","Subject 705","Subject 746"),pch=c(19,17,15),col=c("red","magenta","blue"),lty=1,ncol=3,cex=0.8)
+       
+```
+
+
+```{r, echo=FALSE} 
+### paper size A9: 3.7 x 5.2 cm 
+
+ggplot(data=aneur, 
+       mapping=aes(x=age,y=diam,group=ptnum)) + 
+  geom_line(color=aneur$ptnum) +
+  theme_bw() +
+  xlab("Age at examination in years") + ylab("Aortic diameter in mm") + ggtitle("Profiles aortic diameter by patient")  
+
+ggplot(data=aneur, 
+       mapping=aes(x=age,y=state,group=ptnum)) + 
+  geom_line(color=aneur$ptnum) +
+    theme_bw() +
+  xlab("Age at examination in years") + ylab("States of aneurysm severity") + ggtitle("Profiles states of aneurysm severity by patient")  
+
+```
+
+
+
+```{r, echo=FALSE} 
+### paper size A9: 3.7 x 5.2 cm 
+
+ggplot(data=aneur3, 
+       mapping=aes(x=age,y=diam,group=ptnum)) + 
+  geom_line(color=aneur3$ptnum) +
+  theme_bw() +
+  xlab("Age at examination in years") + ylab("Aortic diameter in mm") + ggtitle("Profiles aortic diameter by patient")  
+
+ggplot(data=aneur3, 
+       mapping=aes(x=age,y=state,group=ptnum)) + 
+  geom_line(color=aneur3$ptnum) +
+    theme_bw() +
+  xlab("Age at examination in years") + ylab("States of aneurysm severity") + ggtitle("Profiles states of aneurysm severity by patient")  
+
+```
+
+
+La variable respuesta puede ser  continua (''diam'') u ordinal (''state''), y la unica covariable es la edad (''age'') \\ 
+\begin{eqnarray*}
+diam_{it} &=& \beta_0 + f_1(age_{it}) + b_{0i} + age_{it} \times b_{1i} + \varepsilon_{it}, 
+\qquad 
+\boldsymbol{b}_i\sim\mathrm{N}(\boldsymbol{0},\boldsymbol{\psi}), 
+\quad 
+\boldsymbol{\varepsilon}_i\sim\mathrm{N}(\boldsymbol{0},\boldsymbol{\Lambda}\sigma^2)  ,
+\end{eqnarray*}
+where $f_1$ is a non-decreasing smoothing function and $b_{1i}>0$. 
+
+
+Quiza solo debemos considerar intercepto fijo, pero NO intercepto aleatorio, y SI pendiente aleatorio 
+\begin{eqnarray*}
+diam_{it} &=& \beta_0 + f_1(age_{it}) +age_{it} \times b_{1i} + \varepsilon_{it}, 
+\qquad 
+b_{1i}\sim\mathrm{N}(0,\psi), 
+\quad 
+\boldsymbol{\varepsilon}_i\sim\mathrm{N}(\boldsymbol{0},\boldsymbol{\Lambda}\sigma^2)  ,
+\end{eqnarray*}
+
+
+
+The ordinal response $state_{it}$ is modelled in terms of the cumulative probabilities $P(state_{it} \leq j | \boldsymbol{b}_i)$ by using the proportional odds model,  
+ \begin{eqnarray*}
+ P(state_{it} \leq j | \boldsymbol{b}_i) &=& \eta_{it,j}, 
+ \end{eqnarray*}
+ subject to 
+\begin{eqnarray*}
+\eta_{it,j} &=& \kappa_{j} + \beta_0 + f_1(age_{it}) +age_{it} \times b_{1i} , 
+\qquad 
+b_{1i}\sim\mathrm{N}(0,\psi), 
+\end{eqnarray*}
+where the constraints are such that $f_1$ is a non-decreasing smoothing function and $b_{1i}>0$, and for the breakpoints $\kappa_{j}<\kappa_{j+1}$ with $j=1,2$. 
+
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="100%", warning=FALSE, message=FALSE}
+
+y = aneur3$diam -29  
+x1 = aneur3$age -60 
+x2 = aneur3$age -60 
+id = as.numeric(as.factor(aneur3$ptnum))
+
+n = length(y)
+N = n_distinct(id)
+Ni = c(0,cumsum(table(id)))+1
+k1 = 3 #
+k2 = 3 #
+knots1 = quantile(x1, c(0.5))
+knots2 = quantile(x2, c(0.5))
+
+```
+
+
+\clearpage
+
+# 2. Generar la matriz diseño $X$ para los B-splines
+
+Note que $f(x)$ se representa como: 
+\begin{eqnarray*}
+f(x) &=& f_1(x_1)   \\ 
+&=& \sum_{j=1}^{h_1} \beta_{1j}\boldsymbol{I}_{1j}(x)   
+\end{eqnarray*} 
+para $\beta_{1j}$  parámetros desconocidos,
+y para los $\boldsymbol{I}_{1j}(x)$  se utilizar\'an I-splines y B-splines.
+
+El número de knots se elige lo suficientemente grande para evitar **over-smoothing**, pero lo suficientemente pequeño para evitar excesivo costo computacional.
+
+El número de $knots$ $K$ es considerado a priori. 
+
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="100%", warning=FALSE, message=FALSE}
+# Generate a basis matrix for Natural Cubic Splines 
+X2 <- ns(x = x2, knots = knots2, intercept = TRUE) 
+###X2 = (X2-mean(X2))/sd(X2) 
+matplot(x2, X2) 
+```
+
+\clearpage
+
+# 3. Generar la matriz diseño $XI1$ para los I-splines
+
+
+```{=tex}
+\begin{eqnarray*}
+f_1(x_1)&&\sum_{j=1}^{h_1} \beta_{1j}\boldsymbol{I}_{1j}(x_1)  \\
+\boldsymbol{I}_{1j}(x_1) &=& \int_{x_0}^{x_1} \boldsymbol{B}_{1j}(u) d_{u}
+\end{eqnarray*}
+```
+
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="100%", warning=FALSE, message=FALSE}
+### ibs: integrated basis splines 
+### degree = 3 cubic splines
+XI1 <- ibs(x1, knots = knots1, degree = 1, intercept = TRUE) 
+###XI1 = (XI1-mean(XI1))/sd(XI1) 
+matplot(x1, XI1)
+abline(v = knots1, h = knots1, lty = 2, col = "gray") 
+```
+
+\clearpage
+
+# 4. Definir la penalización $S1$ y $S2$
+
+La flexibilidad ajustada de $f$ es controlada por  $K$, a través de una penalización cuadrátrica de la forma:  
+\begin{eqnarray*}
+\sum_{j} \lambda_j \boldsymbol{\beta}^{T} \boldsymbol{S}_j \boldsymbol{\beta} 
+\end{eqnarray*}
+donde los  $\boldsymbol{S}_j$ son matrices de coeficientes conocidos, y los $\lambda_j$ son parámetros de suavizamiento estimados. 
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="50%", warning=FALSE, message=FALSE}
+#Este es el código que produce la matriz de diferenciación.  
+#No es el óptimo, pero funciona.  
+#“k” es el número de b-splines y 
+#“d” el orden de la diferenciación. 
+#Adjunto el artículo donde discutimos esto (página 7).
+
+diffMatrix = function(k, d = 2){
+  if( (d<1) || (d %% 1 != 0) )stop("d must be a positive integer value"); 
+  if( (k<1) || (k %% 1 != 0) )stop("k must be a positive integer value"); 
+  if(d >= k)stop("d must be lower than k"); 
+  out = diag(k); 
+  for(i in 1:d){ 
+    out = diff(out); 
+  } 
+  return(out) 
+} 
+(D1 = diffMatrix(k=k1, d=2))
+(D2 = diffMatrix(k=k2, d=2))
+(S1 = t(D1)%*%D1 + diag(1,k1)*10e-4) 
+(S2 = t(D2)%*%D2 + diag(1,k2)*10e-4) 
+```
+
+
+
+\clearpage 
+
+
+# 8. Spline con restricciones creciente
+
+## 8.2. LME: Spline con restricciones creciente
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="100%", warning=FALSE, message=FALSE}
+
+datos.lme.add.incr <- list( y = y , 
+                          id = id ,
+               n = length(y) , 
+               N = N , Ni = Ni,
+               k1=k1, 
+              XI1 = XI1, 
+              x1 = x1, 
+              zero = rep(0,1+k1), 
+              S1=S1  )  
+
+inits.lme.add.incr <- function(){	list( 
+  "b0" = rnorm(1,0,0.1) ,
+  "b1" = abs(rnorm(k1,0,0.1)),  
+  "invtau2" = rgamma(1,1,1) ,
+  "lambda" = rgamma(1,1,1) ,
+  "invsig2" = rgamma(1,1,1) 
+)	} 
+
+param.add = c("b0","b1", "invtau2","tau2","tau", "lambda","rho")
+param.lme.add = c("b0","b1", "invtau2","tau2","tau", "lambda","rho", "invsig2","sig2","sigma")
+``` 
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="100%", warning=FALSE, message=FALSE} 
+fit.lme.add.incr.reslope <- stan("jagam_9_aneur_lme_add_incr_reslope.stan",
+            data=datos.lme.add.incr,
+            chains=3,warmup=300,iter=600,thin=2,cores=4,
+            init= inits.lme.add.incr) 
+```
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="100%", warning=FALSE, message=FALSE}
+print(fit.lme.add.incr.reslope, pars=param.lme.add) 
+stan_trace(fit.lme.add.incr.reslope, pars=param.lme.add)
+stan_plot(fit.lme.add.incr.reslope, pars=c("b0","b1"), point_est = "mean", show_density = TRUE)
+stan_plot(fit.lme.add.incr.reslope, pars=c("invtau2","tau2","tau", "invsig2","sig2","sigma",  "lambda","rho"), point_est = "mean", show_density = TRUE)
+stan_dens(fit.lme.add.incr.reslope, pars=c("b0","b1"))
+stan_dens(fit.lme.add.incr.reslope, pars=c("invtau2","tau2","tau", "invsig2","sig2","sigma", "lambda","rho"))
+```
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="100%", warning=FALSE, message=FALSE}
+pairs(fit.lme.add.incr.reslope, pars = c("b0","b1"), las = 1)
+``` 
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="100%", warning=FALSE, message=FALSE}
+mu1 = get_posterior_mean(fit.lme.add.incr.reslope,"mu1")
+plot(x1,mu1[,"mean-all chains"])
+```
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="100%", warning=FALSE, message=FALSE}
+mu1 = get_posterior_mean(fit.lme.add.incr.reslope,"mu1")
+aneur3$mu1_all = 29 + mu1[,"mean-all chains"]
+
+
+### paper size A9: 3.7 x 5.2 cm 
+
+ggplot(data=aneur3, 
+       mapping=aes(x=age,y=mu1_all,group=ptnum)) + 
+  geom_point() +
+  theme_bw() +
+  xlab("Age at examination in years") + ylab("Aortic diameter in mm") + 
+  ggtitle("Estimated mean aortic diameter")  
+```
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="100%", warning=FALSE, message=FALSE}
+mu2 = get_posterior_mean(fit.lme.add.incr.reslope,"mu2")
+plot(x1,mu2[,"mean-all chains"])
+```
+
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="100%", warning=FALSE, message=FALSE}
+mu2 = get_posterior_mean(fit.lme.add.incr.reslope,"mu2")
+aneur3$mu2_all = 29 + mu2[,"mean-all chains"]
+
+
+### paper size A9: 3.7 x 5.2 cm 
+
+ggplot(data=aneur3, 
+       mapping=aes(x=age,y=mu2_all,group=ptnum)) + 
+  geom_line(color=aneur3$ptnum) +
+  theme_bw() +
+  xlab("Age at examination in years") + ylab("Aortic diameter in mm") + 
+  ggtitle("Estimated profiles aortic diameter by patient")  
+
+ggplot(data=aneur3, 
+       mapping=aes(x=age,y=state,group=ptnum)) + 
+  geom_line(color=aneur3$ptnum) +
+    theme_bw() +
+  xlab("Age at examination in years") + ylab("States of aneurysm severity") + ggtitle("Estimated profiles states of aneurysm severity by patient")  
+
+```
+
+
+\clearpage 
+
+# CASES 9.2. LME: Spline con restricciones creciente
+
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="100%", warning=FALSE, message=FALSE}
+
+idx = names(table(aneur3$ptnum))
+
+id690 = which(aneur3$ptnum==690)
+n690 = length(id690)
+i690 = which(idx==690)
+XI690 = XI1[id690,]
+x690 = x1[id690]   
+
+id703 = which(aneur3$ptnum==703)
+n703 = length(id703)
+i703 = which(idx==703)
+XI703 = XI1[id703,]
+x703 = x1[id703]   
+
+id705 = which(aneur3$ptnum==705)
+n705 = length(id705)
+i705 = which(idx==705)
+XI705 = XI1[id705,]
+x705 = x1[id705]   
+
+id745 = which(aneur3$ptnum==745)
+n745 = length(id745)
+i745 = which(idx==745)
+XI745 = XI1[id745,]
+x745 = x1[id745]   
+
+id746 = which(aneur3$ptnum==746)
+n746 = length(id746)
+i746 = which(idx==746)
+XI746 = XI1[id746,]
+x746 = x1[id746]   
+
+id837 = which(aneur3$ptnum==837)
+n837 = length(id837)
+i837 = which(idx==837)
+XI837 = XI1[id837,]
+x837 = x1[id837]   
+
+datos.lme.add.incr.cases <- list( y = y , 
+                          id = id ,
+               n = length(y) , 
+               N = N , Ni = Ni,
+               k1=k1, 
+              XI1 = XI1, 
+              x1 = x1, 
+              zero = rep(0,1+k1), 
+              S1=S1 , 
+              n690=n690, i690=i690, XI690=XI690, x690=x690, 
+              n703=n703, i703=i703, XI703=XI703, x703=x703, 
+              n705=n705, i705=i705, XI705=XI705, x705=x705, 
+              n745=n745, i745=i745, XI745=XI745, x745=x745, 
+              n746=n746, i746=i746, XI746=XI746, x746=x746, 
+              n837=n837, i837=i837, XI837=XI837, x837=x837 )  
+```
+
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="100%", warning=FALSE, message=FALSE} 
+fit.lme.add.incr.reslope.cases <- stan("jagam_9_aneur_lme_add_incr_reslope_cases.stan",
+            data=datos.lme.add.incr.cases,
+            chains=3,warmup=300,iter=600,thin=2,cores=4,
+            init= inits.lme.add.incr) 
+```
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="100%", warning=FALSE, message=FALSE}
+print(fit.lme.add.incr.reslope.cases, pars=param.lme.add) 
+stan_trace(fit.lme.add.incr.reslope.cases, pars=param.lme.add)
+stan_plot(fit.lme.add.incr.reslope.cases, pars=c("b0","b1"), point_est = "mean", show_density = TRUE)
+stan_plot(fit.lme.add.incr.reslope.cases, pars=c("invtau2","tau2","tau", "invsig2","sig2","sigma",  "lambda","rho"), point_est = "mean", show_density = TRUE)
+stan_dens(fit.lme.add.incr.reslope.cases, pars=c("b0","b1"))
+stan_dens(fit.lme.add.incr.reslope.cases, pars=c("invtau2","tau2","tau", "invsig2","sig2","sigma", "lambda","rho"))
+```
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="100%", warning=FALSE, message=FALSE}
+pairs(fit.lme.add.incr.reslope.cases, pars = c("b0","b1"), las = 1)
+```
+
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="100%", warning=FALSE, message=FALSE}
+mu1 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu1")
+plot(x1,mu1[,"mean-all chains"])
+```
+
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="100%", warning=FALSE, message=FALSE}
+mu2 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu2")
+plot(x1,mu2[,"mean-all chains"])
+```
+
+
+
+
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="50%", warning=FALSE, message=FALSE}
+mu1690 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu1690")
+mu2690 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu2690")
+
+plot(x690,mu1690[,"mean-all chains"])
+plot(x690,mu2690[,"mean-all chains"])
+```
+
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="50%", warning=FALSE, message=FALSE}
+mu1703 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu1703")
+mu2703 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu2703")
+
+plot(x703,mu1703[,"mean-all chains"])
+plot(x703,mu2703[,"mean-all chains"])
+```
+
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="50%", warning=FALSE, message=FALSE}
+mu1705 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu1705")
+mu2705 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu2705")
+
+plot(x705,mu1705[,"mean-all chains"])
+plot(x705,mu2705[,"mean-all chains"])
+```
+
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="50%", warning=FALSE, message=FALSE}
+mu1745 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu1745")
+mu2745 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu2745")
+
+plot(x745,mu1745[,"mean-all chains"])
+plot(x745,mu2745[,"mean-all chains"])
+```
+
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="50%", warning=FALSE, message=FALSE}
+mu1746 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu1746")
+mu2746 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu2746")
+
+plot(x746,mu1746[,"mean-all chains"])
+plot(x746,mu2746[,"mean-all chains"])
+```
+
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="50%", warning=FALSE, message=FALSE}
+mu1837 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu1837")
+mu2837 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu2837")
+
+plot(x837,mu1837[,"mean-all chains"])
+plot(x837,mu2837[,"mean-all chains"])
+```
+
+
+
+
+\clearpage 
+
+# CASES 10.2. LME: Spline con restricciones creciente
+
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="100%", warning=FALSE, message=FALSE}
+
+idx = names(table(aneur3$ptnum))
+
+id690 = which(aneur3$ptnum==690)
+n690 = length(id690)
+i690 = which(idx==690)
+XI690 = XI1[id690,]
+x690 = x1[id690]   
+
+id703 = which(aneur3$ptnum==703)
+n703 = length(id703)
+i703 = which(idx==703)
+XI703 = XI1[id703,]
+x703 = x1[id703]   
+
+id705 = which(aneur3$ptnum==705)
+n705 = length(id705)
+i705 = which(idx==705)
+XI705 = XI1[id705,]
+x705 = x1[id705]   
+
+id745 = which(aneur3$ptnum==745)
+n745 = length(id745)
+i745 = which(idx==745)
+XI745 = XI1[id745,]
+x745 = x1[id745]   
+
+id746 = which(aneur3$ptnum==746)
+n746 = length(id746)
+i746 = which(idx==746)
+XI746 = XI1[id746,]
+x746 = x1[id746]   
+
+id837 = which(aneur3$ptnum==837)
+n837 = length(id837)
+i837 = which(idx==837)
+XI837 = XI1[id837,]
+x837 = x1[id837]   
+
+datos.lme.add.incr.cases <- list( y = y , 
+                          id = id ,
+               n = length(y) , 
+               N = N , Ni = Ni,
+               k1=k1, 
+              XI1 = XI1, 
+              x1 = x1, 
+              zero = rep(0,1+k1), 
+              S1=S1 , 
+              n690=n690, i690=i690, XI690=XI690, x690=x690, 
+              n703=n703, i703=i703, XI703=XI703, x703=x703, 
+              n705=n705, i705=i705, XI705=XI705, x705=x705, 
+              n745=n745, i745=i745, XI745=XI745, x745=x745, 
+              n746=n746, i746=i746, XI746=XI746, x746=x746, 
+              n837=n837, i837=i837, XI837=XI837, x837=x837 )  
+```
+
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="100%", warning=FALSE, message=FALSE} 
+## fit.lme.add.incr.reslope.cases <- stan("jagam_9_aneur_lme_add_incr_reslope_cases_v2.stan",
+##             data=datos.lme.add.incr.cases,
+##             chains=3,warmup=300,iter=600,thin=2,cores=4,
+##             init= inits.lme.add.incr) 
+```
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="100%", warning=FALSE, message=FALSE}
+print(fit.lme.add.incr.reslope.cases, pars=param.lme.add) 
+stan_trace(fit.lme.add.incr.reslope.cases, pars=param.lme.add)
+stan_plot(fit.lme.add.incr.reslope.cases, pars=c("b0","b1"), point_est = "mean", show_density = TRUE)
+stan_plot(fit.lme.add.incr.reslope.cases, pars=c("invtau2","tau2","tau", "invsig2","sig2","sigma",  "lambda","rho"), point_est = "mean", show_density = TRUE)
+stan_dens(fit.lme.add.incr.reslope.cases, pars=c("b0","b1"))
+stan_dens(fit.lme.add.incr.reslope.cases, pars=c("invtau2","tau2","tau", "invsig2","sig2","sigma", "lambda","rho"))
+```
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="100%", warning=FALSE, message=FALSE}
+pairs(fit.lme.add.incr.reslope.cases, pars = c("b0","b1"), las = 1)
+```
+
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="100%", warning=FALSE, message=FALSE}
+mu1 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu1")
+plot(x1,mu1[,"mean-all chains"])
+```
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="100%", warning=FALSE, message=FALSE}
+mu2 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu2")
+plot(x1,mu2[,"mean-all chains"])
+```
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="50%", warning=FALSE, message=FALSE}
+mu1690 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu1690")
+mu2690 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu2690")
+
+plot(x690,mu1690[,"mean-all chains"])
+plot(x690,mu2690[,"mean-all chains"])
+```
+
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="50%", warning=FALSE, message=FALSE}
+mu1703 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu1703")
+mu2703 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu2703")
+
+plot(x703,mu1703[,"mean-all chains"])
+plot(x703,mu2703[,"mean-all chains"])
+```
+
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="50%", warning=FALSE, message=FALSE}
+mu1705 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu1705")
+mu2705 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu2705")
+
+plot(x705,mu1705[,"mean-all chains"])
+plot(x705,mu2705[,"mean-all chains"])
+```
+
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="50%", warning=FALSE, message=FALSE}
+mu1745 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu1745")
+mu2745 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu2745")
+
+plot(x745,mu1745[,"mean-all chains"])
+plot(x745,mu2745[,"mean-all chains"])
+```
+
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="50%", warning=FALSE, message=FALSE}
+mu1746 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu1746")
+mu2746 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu2746")
+
+plot(x746,mu1746[,"mean-all chains"])
+plot(x746,mu2746[,"mean-all chains"])
+```
+
+
+```{R, eval=TRUE, fig.show="hold", echo=TRUE, include=TRUE, out.width="50%", warning=FALSE, message=FALSE}
+mu1837 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu1837")
+mu2837 = get_posterior_mean(fit.lme.add.incr.reslope.cases,"mu2837")
+
+plot(x837,mu1837[,"mean-all chains"])
+plot(x837,mu2837[,"mean-all chains"])
+```
+
+
