@@ -60,11 +60,13 @@ generated quantities {
   vector[n] log_lik;
   vector[n] mu1; 
   vector[n] mu2; 
+  vector[n] ynew; 
   for(i in 1:N){
     for(t in Ni[i]:(Ni[i+1]-1)){
       log_lik[t] = ordered_logistic_lpmf(y[t] | mu[t], kappa);
       mu1[t] = dot_product(XI1[t,] , b1) ; // expected response 
       mu2[t] = dot_product(XI1[t,] , b1) + x1[t]*bre1[i]  ; 
+      ynew[t] = ordered_logistic_rng(mu[t], kappa);
     }
   }
 }
