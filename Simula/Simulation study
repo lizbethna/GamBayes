@@ -1,0 +1,9 @@
+A simulation study is presented to show the potential of our proposal. We simulate
+data sets from a model with a monotone constraint on a covariate such that its smoothing
+function is monotone increasing. We consider different scenarios to show the advantages of 
+our proposal in an empirical manner, since analytical proofs to validate can be a difficult
+task. We analyse the data sets with GAMMs with and without the constraint. In addition, we
+include GLMMs in the analysis with and without monotone constraints. The 4 models are
+compared through a method based on the expected log pointwise predictive density (elpd),
+by using LOO and WAIC through the R packages loo (?) and Stan (??), and the mean
+absolute error (MAE).
